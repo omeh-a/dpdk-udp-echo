@@ -83,7 +83,7 @@ static void tx_flush(void)
 	int xmit = tx_idx, xmitted = 0;
 	while (xmitted != xmit) {
 		xmitted += rte_eth_tx_burst(PORT_TX /* port id */, 0 /* queue id */, &tx_mbufs[xmitted], xmit - xmitted);
-		printf("xmit loop: %d\n", xmitted);
+		printf("xmit loop: outputting a burst %d -> burst size = %d\n", xmitted, xmit- xmitted);
 	}
 	tx_idx = 0;
 	if (xmitted)
