@@ -80,14 +80,25 @@ static uint8_t mac[6] = {0xb4, 0x96, 0x91, 0x6a, 0x7f, 0x2c};
 
 static void tx_flush(void)
 {
-	int xmit = tx_idx, xmitted = 0;
-	while (xmitted != xmit) {
-		xmitted += rte_eth_tx_burst(PORT_TX /* port id */, 0 /* queue id */, &tx_mbufs[xmitted], xmit - xmitted);
-		printf("xmit loop: outputting a burst %d -> burst size = %d\n", xmitted, xmit- xmitted);
-	}
-	tx_idx = 0;
-	if (xmitted)
-		printf("xmitted %d packets\n", xmitted);
+    int xmit = tx_idx, xmitted = 0;
+    while (xmitted != xmit) {
+        int transmitted = rte_eth_tx_burst(PORT_TX /* port id */, 0 /* queue id */, tx_mbufs[xmitted], xmit - xmitted);
+        printf("xmit loop: outputting a burst of %d packets from mbuf[%d] -> burst size = %d\n", transmitted, xmitted, xmit - xmitted);
+        xmitted += transmitted;
+
+        // Print the packet content if it is transmitted
+        if (xmitted) {
+            for (int i = 0; i < rte_pktmbuf_data_len(tx_mbufs[xmitted-1]); i++) {
+                printf("%02x ", ((unsigned char *)rte_pktmbuf_mtod(tx_mbufs[xmitted-1], unsigned char*))[i]);
+                if (i % 16 == 15)
+                    printf("\n");
+            }
+            printf("\n");
+        }
+    }
+    tx_idx = 0;
+    if (xmitted)
+        printf("xmitted %d packets\n", xmitted);
 }
 
 // Function to output packets for lwip
@@ -120,6 +131,7 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
     
 	assert((tx_mbufs[tx_idx] = rte_pktmbuf_alloc(pktmbuf_pool)) != NULL);
 	assert(p->tot_len <= RTE_MBUF_DEFAULT_BUF_SIZE);
+    printf("Storing packet in tx_mbufs[%d]\n", tx_idx);
 	rte_memcpy(rte_pktmbuf_mtod(tx_mbufs[tx_idx], void *), bufptr, p->tot_len);
 	rte_pktmbuf_pkt_len(tx_mbufs[tx_idx]) = rte_pktmbuf_data_len(tx_mbufs[tx_idx]) = p->tot_len;
 	if (++tx_idx == MAX_PKT_BURST)
@@ -238,6 +250,7 @@ static __rte_noreturn void lcore_main(struct netif netif)
 			const uint16_t nb_rx = rte_eth_rx_burst(port, 0,
 					bufs, BURST_SIZE);
             
+
             // Inject packets to LWIP
             for (int i = 0; i < nb_rx; i++) {
                 // Create LWIP packet buffer from rte_mbuf
@@ -292,7 +305,19 @@ static __rte_noreturn void lcore_main(struct netif netif)
 
 			// if (unlikely(nb_rx == 0))
 			// 	continue;
-
+/* Send burst of TX packets, to second port of pair. */
+			// const uint16_t nb_tx = rte_eth_tx_burst(PORT_TX, 0,
+			// 		bufs, nb_rx);
+            // if (nb_tx != 0) {
+            //     printf("Forwarded %d packets\n", nb_tx);
+            //     for (int i = 0; i < rte_pktmbuf_data_len(bufs[0]); i++) {
+            //         printf("%02x ", ((unsigned char *)rte_pktmbuf_mtod(bufs[0], unsigned char*))[i]);
+            //         if (i % 16 == 15)
+            //                 printf("\n");
+            //         }
+            //         printf("\n");
+            //     }
+            
 			// /* Free any unsent packets. */
 			// if (unlikely(nb_tx < nb_rx)) {
 			// 	uint16_t buf;
