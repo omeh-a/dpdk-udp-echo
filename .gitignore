@@ -1,3 +1,7 @@
+# Build stuff
+dpdk/
+lwip/
+
 # Prerequisites
 *.d
 
