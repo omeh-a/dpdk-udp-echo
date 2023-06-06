@@ -34,7 +34,6 @@ static void netif_status_callback(struct netif *netif) {
 err_t dhcp_setup(struct netif netif)
 {
     netif_set_status_callback(&netif, netif_status_callback);
-    netif_set_up(&netif);
     printf("## DHCP SETUP ## \n");
     
     if(!netif_is_up(&netif)) {
