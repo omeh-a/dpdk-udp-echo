@@ -10,9 +10,9 @@ LWIP_VER=2.1.3
 CONTRIB_VER=2.1.0
 
 NO_MAN=
-CFLAGS = -O3 -pipe
-CFLAGS += -Wall -Wunused-function -g
-CFLAGS += -Wextra -I .
+CFLAGS = -pipe
+CFLAGS += -Wall -Wunused-function
+CFLAGS += -Wextra -I. -Iinclude
 
 LDFLAGS += -lpthread -lm
 

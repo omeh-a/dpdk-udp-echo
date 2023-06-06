@@ -43,6 +43,7 @@
 #include <netif/ethernet.h>
 
 #include "udpecho.h"
+#include "lwipopts.h"
 
 #define MAX_PKT_BURST (128)
 #define RING_SIZE (1024)
@@ -107,7 +108,7 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
 	rte_pktmbuf_pkt_len(tx_mbufs[mbuf_count]) = rte_pktmbuf_data_len(tx_mbufs[mbuf_count]) = p->tot_len;
 	if (++mbuf_count == MAX_PKT_BURST)
 		tx_flush();
-
+    
 	if (largebuf)
 		free(largebuf);
 	return ERR_OK;
@@ -118,11 +119,11 @@ static err_t if_init(struct netif *netif)
 {
     struct rte_ether_addr ports_eth_addr;
 
-    // Set network MTU for rx and hope it works for tx. It should.
-    uint16_t _mtu_rx;
-    assert(rte_eth_dev_get_mtu(0 /* port id */, &_mtu_rx) >= 0);
-    assert(_mtu_rx <= PACKET_BUF_SIZE);
-    netif->mtu = _mtu_rx;
+    // Set network MTU
+    uint16_t mtu;
+    assert(rte_eth_dev_get_mtu(0 /* port id */, &mtu) >= 0);
+    assert(mtu <= PACKET_BUF_SIZE);
+    netif->mtu = mtu;
     for (int i = 0; i < 6; i++)
         netif->hwaddr[i] = _mac[i];
 
@@ -130,7 +131,8 @@ static err_t if_init(struct netif *netif)
     netif->output = etharp_output;
     netif->linkoutput = tx_output;
     netif->hwaddr_len = 6;
-    netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_IGMP | NETIF_FLAG_LINK_UP;
+    netif->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_IGMP | 
+                   NETIF_FLAG_LINK_UP | NETIF_FLAG_ETHERNET;
     return ERR_OK;
 }
 
@@ -211,6 +213,8 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
         return retval;
     for (int i = 0; i < 6; i++)
         _mac[i] = addr.addr_bytes[i];
+    
+    // rte_eth_promiscuous_enable(port); 
 
     printf("Port %u MAC: %02" PRIx8 " %02" PRIx8 " %02" PRIx8
            " %02" PRIx8 " %02" PRIx8 " %02" PRIx8 "\n",
@@ -252,11 +256,18 @@ static __rte_noreturn void lcore_main(struct netif netif)
     sys_check_timeouts();
 
     // Create UDP process control block and bind to port 1234
+    ip4_addr_t _addr = IPADDR4_INIT_BYTES(172, 16, 0, 69);
+    ip4_addr_t _gateway = IPADDR4_INIT_BYTES(172, 16, 0, 1);
     assert((upcb = udp_new()) != NULL);
-    udp_bind(upcb, IP_ADDR_ANY, 1234);
+    udp_bind(upcb, &_addr, 1234);
     udp_recv(upcb, udp_recv_handler, NULL);
     
-    
+    // Try fool ARP into doing the right thing
+    struct pbuf *p;
+    assert((p = pbuf_alloc(PBUF_TRANSPORT, sizeof(int) + additional_payload_len, PBUF_RAM)) != NULL);
+    *((int *) p->payload) = MAX_QUEUE_DEPTH;
+    assert(udp_sendto(upcb, p, &_gateway, 1234) == ERR_OK);
+    pbuf_free(p);
 
     printf("-- pid %d : application (%s) has started --\n",
            getpid(),
@@ -271,13 +282,24 @@ static __rte_noreturn void lcore_main(struct netif netif)
         for (i = 0; i < nb_rx; i++)
         {
             printf("Packet received! \n");
-            {
-                struct pbuf *p;
-                assert((p = pbuf_alloc(PBUF_RAW, rte_pktmbuf_pkt_len(rx_mbufs[i]), PBUF_POOL)) != NULL);
-                pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
-                p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
-                assert(netif.input(p, &netif) == ERR_OK);
-            }
+            
+            struct pbuf *p;
+            assert((p = pbuf_alloc(PBUF_RAW, rte_pktmbuf_pkt_len(rx_mbufs[i]), PBUF_POOL)) != NULL);
+            pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
+            p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            assert(netif.input(p, &netif) == ERR_OK);
+
+            // // Print packet contents
+            // uint8_t *data = rte_pktmbuf_mtod(rx_mbufs[i], uint8_t *);
+            // uint32_t len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            // for (uint32_t j = 0; j < len; j++)
+            // {
+            //     printf("%02X ", data[j]);
+            //     if ((j + 1) % 16 == 0)
+            //         printf("\n");
+            // }
+            // printf("\n");
+
             rte_pktmbuf_free(rx_mbufs[i]);
         }
         tx_flush();
@@ -290,7 +312,7 @@ int main(int argc, char *argv[])
 {
     size_t additional_payload_len = 0;
     int queue_depth = 1;
-    int server_port = 10000;
+
 
     // DPDK init
     struct netif _netif = {0};
@@ -342,7 +364,7 @@ int main(int argc, char *argv[])
     /* setting up lwip */
     lwip_init();
     udp_init();
-    dhcp_setup(_netif);
+    // dhcp_setup(_netif);
     assert(netif_add(&_netif, &_addr, &_mask, &_gate, NULL, if_init, ethernet_input) != NULL);
     netif_set_default(&_netif);
     netif_set_link_up(&_netif);
@@ -350,6 +372,7 @@ int main(int argc, char *argv[])
 
     // Start main loop
     lcore_main(_netif);
+
 
     // Cleanup and die
     rte_eal_cleanup();

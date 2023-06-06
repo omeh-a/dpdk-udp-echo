@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "rte_prefetch.h": "c"
+        "rte_prefetch.h": "c",
+        "etharp.h": "c"
     }
 }
