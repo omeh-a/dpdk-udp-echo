@@ -70,7 +70,22 @@ static void tx_flush(void)
     int emitted = 0;
     while (emitted != emission_index)
         emitted += rte_eth_tx_burst(0 /* port id */, 0 /* queue id */, &tx_mbufs[emitted], emission_index - emitted);
+    printf("TX_FLUSH PACKET:\n");
+    
+        // Print the packet content if it is transmitted
+        if (emitted) {
+            for (int i = 0; i < rte_pktmbuf_data_len(tx_mbufs[emitted-1]); i++) {
+                printf("%02x ", ((unsigned char *)rte_pktmbuf_mtod(tx_mbufs[emitted-1], unsigned char*))[i]);
+                if (i % 16 == 15)
+                    printf("\n");
+            }
+            printf("\n");
+        }
+
     mbuf_count = 0;
+
+    // print packet
+    printf("Emitted %d packets\n", emitted);
 }
 
 // Function to output packets for lwip
@@ -107,10 +122,10 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
 	rte_memcpy(rte_pktmbuf_mtod(tx_mbufs[mbuf_count], void *), bufptr, p->tot_len);
 	rte_pktmbuf_pkt_len(tx_mbufs[mbuf_count]) = rte_pktmbuf_data_len(tx_mbufs[mbuf_count]) = p->tot_len;
 	if (++mbuf_count == MAX_PKT_BURST)
-		tx_flush();
     
 	if (largebuf)
 		free(largebuf);
+    tx_flush();
 	return ERR_OK;
 }
 
@@ -118,6 +133,8 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
 static err_t if_init(struct netif *netif)
 {
     struct rte_ether_addr ports_eth_addr;
+
+    
 
     // Set network MTU
     uint16_t mtu;
@@ -227,8 +244,10 @@ static void udp_recv_handler(void *arg __attribute__((unused)),
                              struct pbuf *p, const ip_addr_t *addr,
                              u16_t port)
 {
+
     printf("UDP packet received!\n");
-    if (p == NULL) return;
+    // if (p == NULL) return;
+    assert(udp_sendto(upcb, p, addr, port) == ERR_OK);
 
     // Print packet 
     uint8_t *data = p->payload;
@@ -237,13 +256,13 @@ static void udp_recv_handler(void *arg __attribute__((unused)),
         printf("%c", data[i]);
     }
     printf("\n");
-
     
     printf("Echoing packet to %s:%d\n", ipaddr_ntoa(addr), port);
-    udp_sendto(upcb, p, addr, port);
     pbuf_free(p);
+    tx_flush();
 }
 
+static struct udp_pcb *upcb;
 // Main loop
 static __rte_noreturn void lcore_main(struct netif netif)
 {
@@ -252,28 +271,18 @@ static __rte_noreturn void lcore_main(struct netif netif)
     int queue_depth = 1;
     size_t additional_payload_len = 0;
     struct timespec _t;
-    struct udp_pcb *upcb;
+    
     sys_check_timeouts();
-
     // Create UDP process control block and bind to port 1234
     ip4_addr_t _addr = IPADDR4_INIT_BYTES(172, 16, 0, 69);
     ip4_addr_t _gateway = IPADDR4_INIT_BYTES(172, 16, 0, 1);
-    assert((upcb = udp_new()) != NULL);
-    udp_bind(upcb, &_addr, 1234);
-    udp_recv(upcb, udp_recv_handler, NULL);
     
-    // Try fool ARP into doing the right thing
-    struct pbuf *p;
-    assert((p = pbuf_alloc(PBUF_TRANSPORT, sizeof(int) + additional_payload_len, PBUF_RAM)) != NULL);
-    *((int *) p->payload) = MAX_QUEUE_DEPTH;
-    assert(udp_sendto(upcb, p, &_gateway, 1234) == ERR_OK);
-    pbuf_free(p);
-
-    printf("-- pid %d : application (%s) has started --\n",
-           getpid(),
-           is_client ? "client" : "server");
-
-
+    udp_init();
+    
+    assert((upcb = udp_new_ip_type(IPADDR_TYPE_V4)) != NULL);
+    udp_bind(upcb, IP_ADDR_ANY, 1234);
+    udp_recv(upcb, udp_recv_handler, upcb);
+    tx_flush();
     /* primary loop */
     while (1)
     {
@@ -287,24 +296,22 @@ static __rte_noreturn void lcore_main(struct netif netif)
             assert((p = pbuf_alloc(PBUF_RAW, rte_pktmbuf_pkt_len(rx_mbufs[i]), PBUF_POOL)) != NULL);
             pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
             p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+
+            // Print packet contents
+            uint8_t *data = rte_pktmbuf_mtod(rx_mbufs[i], uint8_t *);
+            uint32_t len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            for (uint32_t j = 0; j < len; j++)
+            {
+                printf("%02X ", data[j]);
+                if ((j + 1) % 16 == 0)
+                    printf("\n");
+            }
+            printf("\n");
+
             assert(netif.input(p, &netif) == ERR_OK);
-
-            // // Print packet contents
-            // uint8_t *data = rte_pktmbuf_mtod(rx_mbufs[i], uint8_t *);
-            // uint32_t len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
-            // for (uint32_t j = 0; j < len; j++)
-            // {
-            //     printf("%02X ", data[j]);
-            //     if ((j + 1) % 16 == 0)
-            //         printf("\n");
-            // }
-            // printf("\n");
-
             rte_pktmbuf_free(rx_mbufs[i]);
         }
-        tx_flush();
-        sys_check_timeouts();
-        
+        // sys_check_timeouts();
     }
 }
 
@@ -363,13 +370,12 @@ int main(int argc, char *argv[])
 
     /* setting up lwip */
     lwip_init();
-    udp_init();
-    // dhcp_setup(_netif);
     assert(netif_add(&_netif, &_addr, &_mask, &_gate, NULL, if_init, ethernet_input) != NULL);
     netif_set_default(&_netif);
-    netif_set_link_up(&_netif);
-    netif_set_up(&_netif);
 
+    netif_set_up(&_netif);
+    netif_set_link_up(&_netif);
+    dhcp_setup(_netif);
     // Start main loop
     lcore_main(_netif);
 
