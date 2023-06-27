@@ -28,6 +28,8 @@
 #include <rte_mbuf.h>
 #include <rte_bus_pci.h>
 
+#define DEBUG
+
 /* workaround to avoid conflicts between dpdk and lwip definitions */
 #undef IP_DF
 #undef IP_MF
@@ -82,7 +84,9 @@ static void tx_flush(void)
     mbuf_count = 0;
 
     // print packet
+    #ifdef DEBUG
     printf("Emitted %d packets\n", emitted);
+    #endif
 }
 
 // Function to output packets for lwip
@@ -119,10 +123,10 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
     assert(p->tot_len <= RTE_MBUF_DEFAULT_BUF_SIZE);
     rte_memcpy(rte_pktmbuf_mtod(tx_mbufs[mbuf_count], void *), bufptr, p->tot_len);
     rte_pktmbuf_pkt_len(tx_mbufs[mbuf_count]) = rte_pktmbuf_data_len(tx_mbufs[mbuf_count]) = p->tot_len;
-    if (++mbuf_count == MAX_PKT_BURST)
-
+    if (++mbuf_count == MAX_PKT_BURST) {
         if (largebuf)
             free(largebuf);
+    }
     tx_flush();
     return ERR_OK;
 }
@@ -275,6 +279,7 @@ static __rte_noreturn void lcore_main(void)
 
     dhcp_setup(&netif);
     // While waiting for DHCP, perform minimal receipt loop
+    printf("Awaiting DHCP...\n");
     while (dhcp_addr_supplied(&netif) == 0)
     {
         unsigned short i, nb_rx = rte_eth_rx_burst(0 /* port id */, 0 /* queue id */, rx_mbufs, MAX_PKT_BURST);
