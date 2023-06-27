@@ -2,6 +2,7 @@
 dpdk/
 lwip/
 ./udpecho
+updecho
 # Prerequisites
 *.d
 
