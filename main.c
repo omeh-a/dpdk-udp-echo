@@ -28,7 +28,7 @@
 #include <rte_mbuf.h>
 #include <rte_bus_pci.h>
 
-#define DEBUG
+// #define DEBUG
 
 /* workaround to avoid conflicts between dpdk and lwip definitions */
 #undef IP_DF
@@ -107,9 +107,10 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
     }
 
     pbuf_copy_partial(p, bufptr, p->tot_len, 0);
-    printf("Packet size: %d\n", p->tot_len);
+
 
 #ifdef DEBUG
+    printf("Packet size: %d\n", p->tot_len);
     // Print packet
     for (int i = 0; i < p->tot_len; i++)
     {

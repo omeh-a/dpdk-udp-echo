@@ -28,10 +28,10 @@
 #define ARP_TABLE_SIZE                          50
 
 // ### DEBUG ###
-#define LWIP_STATS                              1
-#define LWIP_DEBUG                              1
-#define LWIP_DBG_MIN_LEVEL                      LWIP_DBG_LEVEL_ALL
-#define DHCP_DEBUG                              LWIP_DBG_ON
-#define UDP_DEBUG                               LWIP_DBG_ON
-#define ETHARP_DEBUG                            LWIP_DBG_ON
-#define IP_DEBUG                                LWIP_DBG_ON
+// #define LWIP_STATS                              1
+// #define LWIP_DEBUG                              1
+// #define LWIP_DBG_MIN_LEVEL                      LWIP_DBG_LEVEL_ALL
+// #define DHCP_DEBUG                              LWIP_DBG_ON
+// #define UDP_DEBUG                               LWIP_DBG_ON
+// #define ETHARP_DEBUG                            LWIP_DBG_ON
+// #define IP_DEBUG                                LWIP_DBG_ON
