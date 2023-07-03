@@ -35,6 +35,7 @@
 
 #include <netif/ethernet.h>
 #include "udpecho.h"
+#include "pthread.h"
 
 /**
  * @brief Callback function for network interface status change
@@ -74,7 +75,7 @@ err_t dhcp_setup(struct netif *netif)
         } else {
             printf("Link is down.\n");
         }
-        sys_msleep(500);
+        usleep(ARP_TMR_INTERVAL * 1000);
     }
     return dhcp_start(netif);
 }

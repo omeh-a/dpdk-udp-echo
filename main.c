@@ -62,13 +62,14 @@ static struct rte_mbuf *tx_mbufs[MAX_PKT_BURST] = {0};
 
 static uint8_t _mac[6];
 
-static inline void lwip_timeouts_thread(void *arg __attribute__((unused)))
+static inline void *lwip_timeouts_thread(void *arg __attribute__((unused)))
 {
     for (;;)
     {
         sys_check_timeouts();
-        sys_msleep(5000);
+        usleep(ARP_TMR_INTERVAL * 1000); // usleep takes microseconds
     }
+    return NULL;
 }
 
 // Yes this is cursed I know. I am sorry.
@@ -120,10 +121,36 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
     }
 #endif
 
+    const uint32_t offloads = RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM | RTE_MBUF_F_TX_UDP_CKSUM;
     assert((tx_mbufs[mbuf_count] = rte_pktmbuf_alloc(pktmbuf_pool)) != NULL);
+    tx_mbufs[mbuf_count]->ol_flags |= offloads;
+    tx_mbufs[mbuf_count]->l2_len = sizeof(struct rte_ether_hdr);
+    tx_mbufs[mbuf_count]->l3_len = sizeof(struct rte_ipv4_hdr);
+
+    // Generate checksums
+    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(tx_mbufs[mbuf_count], struct rte_ether_hdr *);
+    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(tx_mbufs[mbuf_count], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    struct udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(tx_mbufs[mbuf_count], struct udp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+
+    // Generate header fields
+    #ifdef HW_NO_CKSUM_OFFLOAD
+    // case for offload unavailable
+    udp_hdr->chksum = rte_ipv4_udptcp_cksum(ip_hdr, udp_hdr);
+    ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
+    #else
+    // case for offload available
+    udp_hdr->chksum = rte_ipv4_phdr_cksum(ip_hdr, offloads);
+    ip_hdr->hdr_checksum = 0;
+    #endif
+
+
     assert(p->tot_len <= RTE_MBUF_DEFAULT_BUF_SIZE);
     rte_memcpy(rte_pktmbuf_mtod(tx_mbufs[mbuf_count], void *), bufptr, p->tot_len);
     rte_pktmbuf_pkt_len(tx_mbufs[mbuf_count]) = rte_pktmbuf_data_len(tx_mbufs[mbuf_count]) = p->tot_len;
+ 
+    // Enable offloads in mbufs
+    
+
     if (++mbuf_count == MAX_PKT_BURST) {
         if (largebuf)
             free(largebuf);
@@ -140,6 +167,7 @@ static err_t if_init(struct netif *netif)
     assert(rte_eth_dev_get_mtu(0 /* port id */, &mtu) >= 0);
     assert(mtu <= PACKET_BUF_SIZE);
     netif->mtu = mtu;
+    printf("\n\n Network MTU = %u\n\n", mtu);
     for (int i = 0; i < 6; i++)
         netif->hwaddr[i] = _mac[i];
 
@@ -182,10 +210,31 @@ static inline int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
                port, strerror(-retval));
         return retval;
     }
+    
     // Set offload optimisations if available
+    port_conf.txmode.offloads = 
+    RTE_ETH_TX_OFFLOAD_UDP_CKSUM | 
+    RTE_ETH_TX_OFFLOAD_TCP_CKSUM | 
+    RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+    
+    port_conf.rxmode.offloads =
+    RTE_ETH_RX_OFFLOAD_CHECKSUM;
+
+
+    // // Fast free
     // if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
     // 	port_conf.txmode.offloads |=
     // 		RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
+
+    // // ipv4 checksums
+    // if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)
+    //     port_conf.txmode.offloads |=
+    //         RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+
+    // // udp checksums
+    // if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM)
+    //     port_conf.txmode.offloads |=
+    //         RTE_ETH_TX_OFFLOAD_UDP_CKSUM;
 
     // Set up ethernet. We don't actually have anything in the struct
     // except for the offload optimisation.
@@ -248,7 +297,7 @@ static void udp_recv_handler(void *arg __attribute__((unused)),
                              u16_t port)
 {
 #ifdef DEBUG
-    printf("UDP packet received!\n");
+    printf("UDP echoing packet with length %d totallen %d\n", p->len, p->tot_len);
 #endif
     err_t ret = udp_sendto(upcb, p, addr, port) == ERR_OK;
     if (ret < 0)
@@ -269,13 +318,41 @@ static void udp_recv_handler(void *arg __attribute__((unused)),
     printf("Echoing packet to %s:%d\n", ipaddr_ntoa(addr), port);
 #endif
     pbuf_free(p);
-    tx_flush();
+    // tx_flush();
 }
 struct netif netif = {0};
 static struct udp_pcb *upcb;
 // Main loop
 static __rte_noreturn void lcore_main(void)
 {
+    // LWIP setup
+    ip4_addr_t _addr, _mask, _gate;
+
+    inet_pton(AF_INET, "255.255.255.0", &_mask);
+    inet_pton(AF_INET, "0.0.0.0", &_gate);
+    inet_pton(AF_INET, "0.0.0.0", &_addr);
+
+    lwip_init();
+    assert(netif_add(&netif, &_addr, &_mask, &_gate, NULL, if_init, ethernet_input) != NULL);
+    netif_set_default(&netif);
+    netif_set_link_up(&netif);
+
+    // Create a new thread to run the lwip timer
+    pthread_t thread;
+    pthread_attr_t attr;
+    size_t stacksize = DEFAULT_THREAD_STACKSIZE;
+
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stacksize);
+
+    pthread_create(&thread, &attr, lwip_timeouts_thread, NULL);
+    pthread_attr_destroy(&attr);
+
+    // Adjust thread priority if needed
+    struct sched_param param;
+    param.sched_priority = DEFAULT_THREAD_PRIO;
+
+    pthread_setschedparam(thread, SCHED_OTHER, &param);
     struct rte_mbuf *rx_mbufs[MAX_PKT_BURST];
 
     dhcp_setup(&netif);
@@ -295,10 +372,16 @@ static __rte_noreturn void lcore_main(void)
         }
     }
     printf("\n\n\n\n #### DHCP REGISTERED #### \n\n\n\n");
+    
+    // Set up UDP
     udp_init();
-    assert((upcb = udp_new_ip_type(IPADDR_TYPE_V4)) != NULL);
-    udp_bind(upcb, &netif.ip_addr, 1234);
+    assert((upcb = udp_new()) != NULL);
+    udp_bind(upcb, IP_ANY_TYPE, 1234);
     udp_recv(upcb, udp_recv_handler, upcb);
+
+    // Send a packet to the gateway to force LWIP to add it to the etharp cache.
+    udp_sendto(upcb, pbuf_alloc(PBUF_RAW, 0, PBUF_POOL), &netif.gw, 1234);
+    
 
     /* primary loop */
     while (1)
@@ -327,18 +410,12 @@ static __rte_noreturn void lcore_main(void)
             rte_pktmbuf_free(rx_mbufs[i]);
         }
         // sys_check_timeouts();
+        tx_flush();
     }
 }
 
 int main(int argc, char *argv[])
 {
-    // DPDK init
-    ip4_addr_t _addr, _mask, _gate;
-
-    inet_pton(AF_INET, "255.255.255.0", &_mask);
-    inet_pton(AF_INET, "0.0.0.0", &_gate);
-    inet_pton(AF_INET, "0.0.0.0", &_addr);
-
     // # DPDK init #
     unsigned nb_ports;
     uint16_t portid;
@@ -372,17 +449,12 @@ int main(int argc, char *argv[])
         break; // only do one port for now
     }
 
+    
+
     // Sanity checks
     if (rte_lcore_count() > 1)
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
-    /* setting up lwip */
-    lwip_init();
-    assert(netif_add(&netif, &_addr, &_mask, &_gate, NULL, if_init, ethernet_input) != NULL);
-    netif_set_default(&netif);
-    netif_set_link_up(&netif);
-    // Create a new thread to run the lwip timer
-    sys_thread_new("lwip_timer", lwip_timeouts_thread, NULL, DEFAULT_THREAD_STACKSIZE, DEFAULT_THREAD_PRIO);
 
     // Start main loop
     lcore_main();

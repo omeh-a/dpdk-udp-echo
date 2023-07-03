@@ -6,11 +6,11 @@ PKGCONF = pkg-config
 CLEANFILES = $(PROGS) *.o *.d
 
 DPDK_VER=22.03
-LWIP_VER=2.1.3
+LWIP_VER=2.1.2
 CONTRIB_VER=2.1.0
 
 NO_MAN=
-CFLAGS = -pipe
+CFLAGS = -O0
 CFLAGS += -Wall -Wunused-function
 CFLAGS += -Wextra -I. -Iinclude
 
