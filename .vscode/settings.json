@@ -1,7 +1,10 @@
 {
     "files.associations": {
         "rte_prefetch.h": "c",
-        "etharp.h": "c"
+        "etharp.h": "c",
+        "lwipopts.h": "c",
+        "init.h": "c",
+        "opt.h": "c"
     },
     "C_Cpp.dimInactiveRegions": false
 }

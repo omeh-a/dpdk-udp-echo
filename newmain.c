@@ -13,7 +13,7 @@
 
 static struct rte_mempool *pktmbuf_pool = NULL;
 static int mbuf_count = 0;
-static struct rte_mbuf *tx_mbufs[MAX_PKT_BURST] = {0};
+static struct rte_mbuf *tx_mbuf = {0};
 
 static uint8_t _mac[6];
 
@@ -64,27 +64,15 @@ static struct pbuf *alloc_custom_pbuf(struct rte_mbuf *mbuf)
     );
 }
 
-// Yes this is cursed I know. I am sorry.
-// This has one big benefit however: it allows can be easily adapted to have a
-// concurrent queue for multiple lcores.
-static void tx_flush(void)
-{
-    int emission_index = mbuf_count;
-    int emitted = 0;
-    while (emitted != emission_index)
-        emitted += rte_eth_tx_burst(0, 0, &tx_mbufs[emitted], emission_index - emitted);
-
-    mbuf_count = 0;
-
-    // print packet
-    #ifdef DEBUG
-    printf("Emitted %d packets\n", emitted);
-    #endif
-}
-
 // Function to output packets for lwip
+/**
+ * @brief Output function for lwip
+ * @warning Frees supplied pbuf after sending, including releasing the underlying DPDK mbuf
+*/
 static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf *p)
 {
+    
+    // Copy pbuf data to mbuf
     char buf[PACKET_BUF_SIZE];
     void *bufptr, *largebuf = NULL;
     if (sizeof(buf) < p->tot_len)
@@ -98,31 +86,18 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
         bufptr = buf;
         largebuf = NULL;
     }
-
     pbuf_copy_partial(p, bufptr, p->tot_len, 0);
 
-
-#ifdef DEBUG
-    printf("Packet size: %d\n", p->tot_len);
-    // Print packet
-    for (int i = 0; i < p->tot_len; i++)
-    {
-        printf("%02x ", ((unsigned char *)bufptr)[i]);
-        if (i % 16 == 15)
-            printf("\n");
-    }
-#endif
-
     const uint32_t offloads = RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM | RTE_MBUF_F_TX_UDP_CKSUM;
-    assert((tx_mbufs[mbuf_count] = rte_pktmbuf_alloc(pktmbuf_pool)) != NULL);
-    tx_mbufs[mbuf_count]->ol_flags |= offloads;
-    tx_mbufs[mbuf_count]->l2_len = sizeof(struct rte_ether_hdr);
-    tx_mbufs[mbuf_count]->l3_len = sizeof(struct rte_ipv4_hdr);
+    tx_mbuf = rte_pktmbuf_alloc(pktmbuf_pool);
+    tx_mbuf->ol_flags |= offloads;
+    tx_mbuf->l2_len = sizeof(struct rte_ether_hdr);
+    tx_mbuf->l3_len = sizeof(struct rte_ipv4_hdr);
 
     // Generate checksums
-    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(tx_mbufs[mbuf_count], struct rte_ether_hdr *);
-    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(tx_mbufs[mbuf_count], struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
-    struct udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(tx_mbufs[mbuf_count], struct udp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(tx_mbuf, struct rte_ether_hdr *);
+    struct rte_ipv4_hdr *ip_hdr = rte_pktmbuf_mtod_offset(tx_mbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    struct udp_hdr *udp_hdr = rte_pktmbuf_mtod_offset(tx_mbuf, struct udp_hdr *, sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
 
     // Generate header fields
     #ifdef HW_NO_CKSUM_OFFLOAD
@@ -135,17 +110,14 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
     ip_hdr->hdr_checksum = 0;
     #endif
 
+    rte_memcpy(rte_pktmbuf_mtod(tx_mbuf, void *), bufptr, p->tot_len);
+    rte_pktmbuf_pkt_len(tx_mbuf) = rte_pktmbuf_data_len(tx_mbuf) = p->tot_len;
+    
+    uint16_t ret = rte_eth_tx_burst(0, 0, &tx_mbuf, 1);
 
-    assert(p->tot_len <= RTE_MBUF_DEFAULT_BUF_SIZE);
-    rte_memcpy(rte_pktmbuf_mtod(tx_mbufs[mbuf_count], void *), bufptr, p->tot_len);
-    rte_pktmbuf_pkt_len(tx_mbufs[mbuf_count]) = rte_pktmbuf_data_len(tx_mbufs[mbuf_count]) = p->tot_len;
- 
-    // Enable offloads in mbufs
-    if (++mbuf_count == MAX_PKT_BURST) {
-        if (largebuf)
-            free(largebuf);
-    }
-    tx_flush();
+    if (largebuf)
+        free(largebuf);
+    rte_pktmbuf_free(tx_mbuf);
     return ERR_OK;
 }
 
@@ -307,8 +279,6 @@ static void udp_recv_handler(void *arg __attribute__((unused)),
 
     printf("Echoing packet to %s:%d\n", ipaddr_ntoa(addr), port);
 #endif
-    pbuf_free(p);
-    // tx_flush();
 }
 struct netif netif = {0};
 static struct udp_pcb *upcb;
@@ -357,10 +327,8 @@ static __rte_noreturn void lcore_main(void)
             struct pbuf *p;
             
             assert((p = alloc_custom_pbuf(rx_mbufs[i])) != NULL);
-            // pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
-            // p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
             assert(netif.input(p, &netif) == ERR_OK);
-            rte_pktmbuf_free(rx_mbufs[i]);
+            // rte_pktmbuf_free(rx_mbufs[i]);
         }
     }
     printf("\n\n\n\n #### DHCP REGISTERED #### \n\n\n\n");
@@ -383,8 +351,6 @@ static __rte_noreturn void lcore_main(void)
         {
             struct pbuf *p;
             assert((p = alloc_custom_pbuf(rx_mbufs[i])) != NULL);
-            // pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
-            // p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
 
 // Print packet contents
 #ifdef DEBUG
@@ -399,10 +365,8 @@ static __rte_noreturn void lcore_main(void)
             printf("\n");
 #endif
             assert(netif.input(p, &netif) == ERR_OK);
-            rte_pktmbuf_free(rx_mbufs[i]);
+            // rte_pktmbuf_free(rx_mbufs[i]);
         }
-        // sys_check_timeouts();
-        tx_flush();
     }
 }
 

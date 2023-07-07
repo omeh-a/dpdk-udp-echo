@@ -1,3 +1,9 @@
+// lwipopts.h
+// This file overrides the default configuration in LWIP so it does
+// something sane. You may need to change some elements for your system
+// but it is unlikely. Define DEBUG_LWIP to 1 to turn on all LWIP debug
+// output.
+
 #include <stdlib.h>
 #include <stdio.h>
 
