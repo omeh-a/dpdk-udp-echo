@@ -9,12 +9,18 @@
 // Uncomment below for debugging output
 // #define DEBUG
 
+// Uncomment below for zero copy LWIP - note that this inexplicably makes things slower
+// #define ZEROCOPY
+
+// Uncomment below for artificial per-burst delay. You can set number of cycles delay with this
+#define BURST_DELAY 1000UL
+
 #include "main.h"
 
 static struct rte_mempool *pktmbuf_pool = NULL;
 static int mbuf_count = 0;
 static struct rte_mbuf *tx_mbufs[MAX_PKT_BURST] = {0};
-
+ 
 static uint8_t _mac[6];
 
 static inline void *lwip_timeouts_thread(void *arg __attribute__((unused)))
@@ -27,6 +33,7 @@ static inline void *lwip_timeouts_thread(void *arg __attribute__((unused)))
     return NULL;
 }
 
+#ifdef ZEROCOPY
 // Custom pbuf for zero copy between DPDK/LWIP
 typedef struct lwip_custom_pbuf {
     struct pbuf_custom pbuf;
@@ -35,7 +42,7 @@ typedef struct lwip_custom_pbuf {
 
 LWIP_MEMPOOL_DECLARE(
     RX_POOL,
-    PACKET_BUF_SIZE * 2,
+    PACKET_BUF_SIZE,
     sizeof(lwip_custom_pbuf_t),
     "Zero-copy RX pool"
 );
@@ -54,6 +61,7 @@ static struct pbuf *alloc_custom_pbuf(struct rte_mbuf *mbuf)
     assert(pk != NULL && "Failed to allocate custom pbuf!");
     pk->mbuf = mbuf;
     pk->pbuf.custom_free_function = free_custom_pbuf;
+    // buf_count++;
     return pbuf_alloced_custom(
         PBUF_RAW,
         &pk->mbuf->pkt_len, // Might need to make this bigger
@@ -63,6 +71,7 @@ static struct pbuf *alloc_custom_pbuf(struct rte_mbuf *mbuf)
         &pk->mbuf->pkt_len
     );
 }
+#endif
 
 // Yes this is cursed I know. I am sorry.
 // This has one big benefit however: it allows can be easily adapted to have a
@@ -142,10 +151,10 @@ static err_t tx_output(struct netif *netif __attribute__((unused)), struct pbuf 
  
     // Enable offloads in mbufs
     if (++mbuf_count == MAX_PKT_BURST) {
-        if (largebuf)
-            free(largebuf);
     }
     tx_flush();
+    if (largebuf)
+        free(largebuf);
     return ERR_OK;
 }
 
@@ -323,7 +332,9 @@ static __rte_noreturn void lcore_main(void)
     inet_pton(AF_INET, "0.0.0.0", &_addr);
 
     lwip_init();
+    #ifdef ZEROCOPY
     LWIP_MEMPOOL_INIT(RX_POOL);
+    #endif
     assert(netif_add(&netif, &_addr, &_mask, &_gate, NULL, if_init, ethernet_input) != NULL);
     netif_set_default(&netif);
     netif_set_link_up(&netif);
@@ -355,12 +366,21 @@ static __rte_noreturn void lcore_main(void)
         for (i = 0; i < nb_rx; i++)
         {
             struct pbuf *p;
-            
+
+            #ifdef ZEROCOPY
             assert((p = alloc_custom_pbuf(rx_mbufs[i])) != NULL);
-            // pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
-            // p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            
+            #else
+            assert((p = pbuf_alloc(PBUF_RAW, rte_pktmbuf_pkt_len(rx_mbufs[i]), PBUF_POOL)) != NULL);
+            pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
+            p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            #endif
+
             assert(netif.input(p, &netif) == ERR_OK);
+            
+            #ifndef ZEROCOPY
             rte_pktmbuf_free(rx_mbufs[i]);
+            #endif
         }
     }
     printf("\n\n\n\n #### DHCP REGISTERED #### \n\n\n\n");
@@ -377,16 +397,16 @@ static __rte_noreturn void lcore_main(void)
 
     /* primary loop */
     while (1)
-    {
+    {   
         unsigned short i, nb_rx = rte_eth_rx_burst(0 /* port id */, 0 /* queue id */, rx_mbufs, MAX_PKT_BURST);
+        
+#ifdef BURST_DELAY
+        for (int i = 0; i < BURST_DELAY; i++)
+            asm volatile("NOP");
+#endif
+        
         for (i = 0; i < nb_rx; i++)
         {
-            struct pbuf *p;
-            assert((p = alloc_custom_pbuf(rx_mbufs[i])) != NULL);
-            // pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
-            // p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
-
-// Print packet contents
 #ifdef DEBUG
             uint8_t *data = rte_pktmbuf_mtod(rx_mbufs[i], uint8_t *);
             uint32_t len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
@@ -398,20 +418,41 @@ static __rte_noreturn void lcore_main(void)
             }
             printf("\n");
 #endif
+            struct pbuf *p;
+
+            #ifdef ZEROCOPY
+            assert((p = alloc_custom_pbuf(rx_mbufs[i])) != NULL);
+            
+            #else
+            assert((p = pbuf_alloc(PBUF_RAW, rte_pktmbuf_pkt_len(rx_mbufs[i]), PBUF_POOL)) != NULL);
+            pbuf_take(p, rte_pktmbuf_mtod(rx_mbufs[i], void *), rte_pktmbuf_pkt_len(rx_mbufs[i]));
+            p->len = p->tot_len = rte_pktmbuf_pkt_len(rx_mbufs[i]);
+            #endif
+
             assert(netif.input(p, &netif) == ERR_OK);
+            
+            #ifndef ZEROCOPY
             rte_pktmbuf_free(rx_mbufs[i]);
+            #endif
         }
-        // sys_check_timeouts();
         tx_flush();
     }
 }
 
 int main(int argc, char *argv[])
 {
+    // Initialise utilisation socket
+    // int pid = fork();
+    // if (pid > 0) {
+    //     execl("./utilisationsocket", "utilisation", NULL);
+    //     assert(0 && "Failed to start utilisation socket!");
+    // }
+    
     // # DPDK init #
     unsigned nb_ports;
     uint16_t portid;
     int ret;
+
 
     // Start EAL
     if ((ret = rte_eal_init(argc, argv)) < 0)
@@ -446,7 +487,6 @@ int main(int argc, char *argv[])
     // Sanity checks
     if (rte_lcore_count() > 1)
         printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
-
 
     // Start main loop
     lcore_main();

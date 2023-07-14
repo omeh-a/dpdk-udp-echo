@@ -55,7 +55,7 @@
 #include "lwipopts.h"
 
 // Constants
-#define MAX_PKT_BURST (128)
+#define MAX_PKT_BURST (512)
 #define RING_SIZE (1024)
 #define MEMPOOL_CACHE_SIZE (256)
 #define PACKET_BUF_SIZE (1518)

@@ -1,2 +1,2 @@
 
-make && scp ./udpecho ertos@vb-103:~/benchmarking/
+make && scp ./udpecho ./utilisationsocket ertos@vb-103:~/benchmarking/

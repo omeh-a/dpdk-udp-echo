@@ -100,8 +100,16 @@ OBJS = $(C_OBJS) $(LWIP_OBJS)
 
 CLEANFILES += $(LWIP_OBJS)
 
+# utilisation socket
+UTIL_PROG = utilisationsocket
+UTIL_SRCS = utilisationsocket.c
+
+UTIL_OBJS = $(UTIL_SRCS:.c=.o)
+CLEANFILES += $(UTIL_PROG) $(UTIL_OBJS)
+
+
 .PHONY: all
-all: $(PROGS)
+all: $(PROGS) $(UTIL_PROG)
 
 $(DPDK_SRC_DIR).tar.xz:
 	wget -P $(DPDK_DIR) https://fast.dpdk.org/rel/dpdk-$(DPDK_VER).tar.xz
@@ -125,6 +133,13 @@ $(DPDK_PKG_CONFIG_FILE): $(DPDK_SRC_DIR)
 	meson --prefix=$(DPDK_INSTALL_DIR) --libdir=lib/x86_64-linux-gnu $(DPDK_SRC_DIR)/build $(DPDK_SRC_DIR)
 	ninja -C $(DPDK_SRC_DIR)/build
 	ninja -C $(DPDK_SRC_DIR)/build install
+
+$(UTIL_PROG): $(UTIL_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+$(UTIL_OBJS): $(UTIL_SRCS)
+	$(CC) $(CFLAGS) -c $^
+
 
 $(OBJS): $(CONTRIB_SRC_DIR) $(LWIP_SRC_DIR) $(DPDK_PKG_CONFIG_FILE)
 

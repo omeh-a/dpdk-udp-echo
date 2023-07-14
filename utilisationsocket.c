@@ -157,11 +157,11 @@ void *idle_thread(void *arg)
     uint64_t x0, x1, delta, total, idle;
 
     idle = total = 0;
-    x0 = aarch64_get_cycles();
+    x0 = get_cycles();
 
     while (1) {
         x1 = x0;
-        x0 = aarch64_get_cycles();
+        x0 = get_cycles();
             
         delta = x0 - x1;
         total += delta;
@@ -251,4 +251,5 @@ int main(int argc, const char *argv[])
         // Terminate connection
         close(client);
     }
+    return 0;
 }
