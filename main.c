@@ -13,7 +13,7 @@
 // #define ZEROCOPY
 
 // Uncomment below for artificial per-burst delay. You can set number of cycles delay with this
-#define BURST_DELAY 1000UL
+#define BURST_DELAY 10UL
 
 #include "main.h"
 
@@ -447,7 +447,7 @@ int main(int argc, char *argv[])
     //     execl("./utilisationsocket", "utilisation", NULL);
     //     assert(0 && "Failed to start utilisation socket!");
     // }
-    
+
     // # DPDK init #
     unsigned nb_ports;
     uint16_t portid;
