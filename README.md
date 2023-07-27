@@ -1,6 +1,6 @@
 # udp-dpdk-echo
 
-UDP packet echo server implemented over DPDK.
+UDP packet echo server implemented over DPDK. This runs on a single thread using a single port and is readily able to saturate a 10 gigabit connection, tested on a Core i9-12900KF with an Intel X570 network interface. This should work fine on other DPDK-compatible NICs.
 
 **IMPORTANT**: You need to comment out line 1009 in `lwip/lwip-2.1.2/src/core/ipv4/etharp.c` for this to work. There is an assert which does little but is triggered whenever UDP load > one gibibit occurs. If there are complications to commenting this out, I am not aware of them.
 ```
@@ -18,4 +18,13 @@ Place the file on the target machine (can use `./install.sh` script to do this) 
 sudo LD_LIBRARY_PATH=./dpdk/dpdk-stable-22.11.1/install/lib/x86_64-linux-gnu ./udpecho-l 0-1 --proc-type=primary --file-prefix=pmd1
 ```
 
-... making sure to include the appropriate directory for a DPDK installation matching the one used to build the program.
+... making sure to include the appropriate directory for a DPDK installation matching the one used to build the program. **You need to set up DPDK and attach the `vfio-pci` driver to your target network device!**. Follow the DPDK Linux Quick-start guide for help on this.
+
+If you want to run this on your local machine, ignore the moving instructions and just run the command :)
+
+## Bugs
+
+This program does not work as you might expect. It's not entirely clear why, but running DPDK in the same address space as LWIP appears to cause constant and frustrating issues. Please be warned that if you use my code as a reference, many design decisions are simply avoiding the issues that would appear noramlly as opposed to being best practice.
+
+** Do not trust the LWIP documentation if you want to extend this! ** 
+
