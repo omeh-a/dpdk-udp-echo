@@ -22,9 +22,3 @@ sudo LD_LIBRARY_PATH=./dpdk/dpdk-stable-22.11.1/install/lib/x86_64-linux-gnu ./u
 
 If you want to run this on your local machine, ignore the moving instructions and just run the command :)
 
-## Bugs
-
-This program does not work as you might expect. It's not entirely clear why, but running DPDK in the same address space as LWIP appears to cause constant and frustrating issues. Please be warned that if you use my code as a reference, many design decisions are simply avoiding the issues that would appear noramlly as opposed to being best practice.
-
-** Do not trust the LWIP documentation if you want to extend this! ** 
-
